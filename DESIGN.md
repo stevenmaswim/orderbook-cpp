@@ -1,0 +1,208 @@
+# orderbook-cpp v2: design
+
+Status: draft for review. No code exists yet on this branch. Every number below is either a citation to a committed artifact or a plan for how a number will be produced.
+
+## 1. Goals
+- A single-instrument limit order book with a matching engine. Price-time priority, integer ticks and quantities, no floating point anywhere in the engine.
+- Order types: Limit (GTC), Market, IOC, FOK, Cancel and Modify.
+- The test suite checks correctness three ways: unit tests per order type, a differential fuzz test against a deliberately naive reference book, and the invariant checker ported from the Python engine, run after every fuzz step. It must run clean under ASan + UBSan.
+- Every performance number comes from a committed, reproducible bench artifact (`bench/RESULTS.md`): machine, compiler, flags, workload, seed and a 5-run median.
+- Small enough to explain fully. Readability first, and every non-obvious line carries a WHY comment.
+
+## 2. Non-goals (baseline)
+- Multiple instruments, sessions or auctions. No stop orders, iceberg orders or self-trade prevention.
+- Networking or wire protocols (FIX/OUCH). Persistence and recovery.
+- Thread safety inside the book. The book is single-writer by design (see section 8). Menu item E adds a gateway thread in front of it, not locks inside it.
+- Remembering every order id ever used. Duplicate detection only covers ids that are currently live (section 5).
+
+## 3. Core types (`include/ob/types.hpp`)
+| Type | Representation | Why |
+|---|---|---|
+| `Price` | `int64_t` ticks | Exact. Integer compares are cheap. No float rounding. |
+| `Qty` | `int64_t` | Signed on purpose. An accounting bug shows up as a negative number the invariant checker catches, instead of wrapping to 2^64. |
+| `OrderId` | `uint64_t`, chosen by the client | Matches the brief. The engine does not mint ids, so tests and replay traces control them. |
+| `Seq` | `uint64_t`, engine counter | Stamped when an order rests. The checker and the reference model compare FIFO order with it. |
+| `Side` | `enum class : uint8_t { Buy, Sell }` | |
+| `OrderType` | `enum class : uint8_t { Limit, Market, IOC, FOK }` | Order type and time-in-force are folded into one enum because only these four combinations exist. Alternative: separate `type` and `tif` fields as in FIX. Worth switching if GTD or Day orders are added. |
+
+Input bounds are checked at the API: `0 < qty <= kMaxQty` (1e9), and `kMinPrice <= price <= kMaxPrice` for priced types. With `kMaxQty` bounded and the order count bounded, sums of quantity at a level cannot overflow int64. The engine never multiplies price by qty.
+
+## 4. Events (`include/ob/event.hpp`)
+All output is a stream of one flat, trivially copyable `Event` struct:
+`{ EventType type; Side side; Reason reason; OrderId id; OrderId other_id; Price price; Qty qty; }`
+
+| EventType | Meaning |
+|---|---|
+| `Accepted` | The order passed validation. Carries side, type and limit price. |
+| `Rejected` | Validation failed or the id is a live duplicate. Carries `reason`. The book is unchanged. |
+| `Trade` | `id` is the taker, `other_id` is the maker, `price` is the maker's resting price, `qty` is the filled amount. |
+| `Cancelled` | Remaining qty removed. `reason` is one of: UserCancel, MarketRemainder, IocRemainder, FokUnfillable, ReplacedOut. |
+| `Modified` | The modify was applied. `reason` = KeptPriority or LostPriority. |
+
+**Delivery:** the book's mutating methods are member templates that take `Sink& sink`. Any type satisfying the concept `EventSink` (callable as `sink(const Event&)`) works. Tests pass a `VectorSink` (it records events). The bench passes a `CountingSink` (it only counts). Why: the compiler inlines the call, so there is no virtual dispatch and no `std::function` (which can heap-allocate and is an indirect call). Alternative: a preallocated ring buffer the caller drains, which is what menu item E wants on the output side. A ring is just another `EventSink`, so this choice does not block E.
+
+**Event order is part of the contract**, because the differential test compares event streams exactly:
+- submit: `Accepted`, then each `Trade` in fill order, then at most one `Cancelled` for the remainder.
+- modify: `Modified`, then any `Trade` if the new price crosses.
+- On reject, `Rejected` is the only event.
+
+## 5. Order-type semantics (the contract the reference model also implements)
+- **Limit (GTC):** match while the best opposite price crosses (buy: `ask <= limit`, sell: `bid >= limit`). The remainder rests at `limit` at the back of that level's FIFO.
+- **Market:** the price field must be 0. Match against the best opposite level regardless of price until filled or the opposite side is empty. The remainder is `Cancelled(MarketRemainder)` and never rests. A market order into an empty side gets `Accepted` then `Cancelled` for the full qty.
+- **IOC:** same as Limit, but the remainder is `Cancelled(IocRemainder)` and never rests.
+- **FOK:** first walk the opposite levels that cross, summing each level's aggregate qty, and stop as soon as the sum reaches the order qty. If the sum falls short: `Accepted`, then `Cancelled(FokUnfillable)`, with no trades and no state change. Otherwise execute it as IOC, which then fully fills. Cost is O(levels crossed), not O(orders), because each level keeps a running total.
+- **Trade price** is always the maker's resting price. The taker gets any price improvement.
+- **Cancel(id):** if `id` is resting, remove it and emit `Cancelled(UserCancel)` with the qty removed. Otherwise `Rejected(UnknownOrder)`. That covers ids never seen, already filled, already cancelled, or that never rested.
+- **Modify(id, new_price, new_qty)**, where `new_qty` is the new *open* quantity:
+  - The target must be resting and `new_qty > 0`, otherwise `Rejected`. Removing an order uses Cancel, not modify-to-zero.
+  - Same price and `new_qty < open`: shrink in place and keep queue position (`Modified(KeptPriority)`). The difference counts as cancelled qty.
+  - Same price and `new_qty == open`: a no-op that keeps priority.
+  - Price change or `new_qty > open`: cancel-replace. Remove the order, then re-enter it with the same id, a new seq and the new price/qty (`Modified(LostPriority)`). If the new price crosses, it trades as a taker before resting.
+  - Why an increase loses priority: otherwise a trader could hold their place in the queue and grow size behind everyone who arrived later. Real venues (CME, Nasdaq) use the same rule.
+  - Alternative: Nasdaq OUCH "replace" issues a new order id. We keep the id because it makes the ledger and tests simpler. This is a deliberate simplification.
+- **Duplicate id:** a submit whose id is currently resting is `Rejected(DuplicateId)`. Ids of finished orders may be reused. Why: remembering every id forever needs unbounded memory. Real venues enforce uniqueness per session at the gateway, which we leave out of scope.
+- **Quantity accounting** (it keeps the Python conservation invariant exact even with modify): each id keeps a ledger of `total` (sum of all qty accepted for it), `filled`, `cancelled` and `open`. An in-place shrink adds to `cancelled`. A cancel-replace adds the old `open` to `cancelled` and the new qty to `total`. The invariant is `filled + open + cancelled == total`.
+
+## 6. Data structures (baseline) and Big-O
+Baseline goal: obviously correct and allocation-heavy on purpose, so each upgrade (A, B, C) is a measured before/after.
+
+```
+OrderBook
+  bids_: std::map<Price, Level, std::greater<Price>>   // begin() = best bid
+  asks_: std::map<Price, Level, std::less<Price>>      // begin() = best ask
+  index_: std::unordered_map<OrderId, Locator>         // id -> where it rests
+  next_seq_: Seq
+
+Level   { std::list<RestingOrder> fifo; Qty total; }   // total kept incrementally
+RestingOrder { OrderId id; Price price; Qty open; Seq seq; Side side; }
+Locator { Side side; Level* level; std::list<RestingOrder>::iterator it; }
+```
+- Why `std::map`: sorted, so the best price is `begin()`. Iterators and pointers stay valid across inserts and erases, so a `Locator` can hold them.
+- Why `std::list`: erasing from the middle is O(1) and iterators stay valid. That gives O(1) cancel without the Python engine's lazy deletion.
+- Lazy deletion is dropped on purpose. In Python it was the only cheap removal from a heap. Here it would leave stale entries that make `best_bid()` amortized rather than O(1) and make the depth view need a separate dict.
+
+L = price levels on one side, k = fills produced by an operation, F = levels a FOK walks.
+
+| Operation | Cost | Notes |
+|---|---|---|
+| Add, non-crossing | O(log L) + O(1) avg | map lookup/insert, list push_back, hash insert |
+| Add, crossing | O(k + log L) | each fill is O(1). An emptied level is erased by iterator, which is amortized O(1). |
+| Cancel | O(1) avg | hash lookup, list erase, and if the level empties, map erase by iterator |
+| Modify shrink | O(1) avg | |
+| Modify replace | cancel + add | |
+| FOK pre-check | O(F) | uses `Level::total`, never walks orders |
+| best bid/ask | O(1) | `begin()` |
+| depth top N | O(N) | |
+
+## 7. Memory layout (baseline, stated so F has something to compare)
+- `RestingOrder` is about 40 bytes of fields. Each one lives in its own `std::list` node (adds 2 pointers plus malloc header), its own map node per level, and its own `unordered_map` node per id. So a resting order costs several heap allocations scattered across memory, and matching chases pointers through nodes that are not adjacent.
+- This is deliberate for the baseline. A (intrusive list), B (pool) and C (flat ladder) each remove one source of this, and the bench shows what each one buys.
+- The M5 reports a 128-byte cache line (`sysctl hw.cachelinesize`). Padding and alignment in E and F use 128, not the textbook 64.
+
+## 8. Threading model
+- The book is single-threaded and not thread-safe. Exactly one thread mutates it.
+- Why: the matching order *is* the output. Locks would serialize it anyway (the Python engine shows this: 3 threads gave the same throughput as 1). A single writer also makes the engine deterministic: the same input stream gives the same events, which is what makes the differential fuzz test and trace replay possible. This is the LMAX-style single-writer pattern.
+- Concurrency arrives only in E: gateway threads feed one matcher thread through an SPSC ring. The book code does not change.
+
+## 9. Error handling
+- No exceptions on the hot path. Bad input becomes `Rejected` events.
+- Internal invariants use `OB_ASSERT`. It is active in Debug and sanitizer builds and compiled out in Release (`NDEBUG`).
+
+## 10. Build
+- CMake, `CMAKE_CXX_STANDARD 20` (this fixes the 17/20 mismatch in the old repo), extensions off.
+- Warnings: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror`. `-Wconversion` is there because silent int64 to int truncation in a price or qty is a classic bug.
+- `CMakePresets.json` presets:
+  - `debug`
+  - `asan-ubsan` (`-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all`, so any UB fails the test)
+  - `release` (`-O3 -DNDEBUG`, exact flags recorded in RESULTS.md)
+  - `tsan`, added with E
+- Tests use GoogleTest via `FetchContent`, pinned to a release tag. Why: it is industry standard and has good failure messages. Alternatives: doctest (one header, faster builds) or the old repo's homegrown CHECK harness (no fixtures, poor messages). Cost: the first configure needs network access.
+- Layout:
+```
+include/ob/   types.hpp event.hpp order_book.hpp
+src/          order_book.cpp (non-template parts)
+tests/        unit/*.cpp  reference_book.hpp  invariants.hpp  fuzz_differential.cpp
+bench/        bench_main.cpp  trace.hpp  py_parity/ (Python scripts)  RESULTS.md
+```
+
+## 11. Test strategy
+1. **Unit tests, one behavior per test** (named like the Python suite, e.g. `MarketRemainderIsCancelledNotRested`), grouped by type:
+   - validation and rejects
+   - limit rest and cross
+   - FIFO within a level
+   - walking multiple levels
+   - partial fills both ways
+   - market (including an empty book)
+   - IOC
+   - FOK (exactly fillable, short by one, fillable only across levels)
+   - cancel (live, unknown, twice, after fill)
+   - modify (shrink keeps priority, increase and price change lose it, re-price into a cross trades at the maker's price)
+   - duplicate ids
+2. **Reference model** (`tests/reference_book.hpp`): one `std::vector` of resting orders. Best price is found by a linear scan for best price then lowest seq. Every operation is O(n). It shares no data structures with the engine, so one bug cannot hide in both. It implements section 5 directly from the text.
+3. **Differential fuzz** (`tests/fuzz_differential.cpp`): for each seed, generate a stream of operations and apply each one to both books. After every operation:
+   - (a) the event vectors must be identical
+   - (b) book snapshots must be identical: per side, levels from best to worst, each with an ordered list of `(id, open)`
+   - (c) the invariant checker must pass
+
+   The generator is skewed to find bugs: a narrow price band (about 10 ticks) so most orders cross; all four types; cancels and modifies aimed mostly at live ids but sometimes at dead or unknown ones; reused ids; and FOK quantities near the available liquidity.
+
+   Defaults: about 500 seeds x 1,000 ops under ctest, so it stays fast under ASan. A `--long` flag runs a large sweep.
+
+   On failure it prints the seed, the op index and the last few ops, so the failure is a one-line repro.
+
+   The RNG is our own (splitmix64 / xoshiro256**). Why not `std::mt19937` + `std::uniform_int_distribution`? The distributions are implementation-defined, so the same seed would produce different streams on libc++ (Mac) and libstdc++ (Linux CI).
+4. **Invariant checker** (`tests/invariants.hpp`), ported from `Order_book_project/tests/conftest.py::assert_invariants`. It builds its own ledger from the event stream only, so it does not trust engine internals. It checks:
+   - Conservation per id: `filled + open + cancelled == total`, and no negative values
+   - Every trade has qty > 0, maker and taker sides differ, and price equals the maker's resting price
+   - The book is never crossed at rest: `best_bid < best_ask`
+   - Each level's incremental `total` equals the recomputed sum of its orders (the Python "depth equals recount" check)
+   - Extras the C++ design makes possible: no empty levels exist, seq strictly increases within each FIFO, and the index size equals the resting count
+5. Sanitizers: the whole suite, fuzz included, runs under the `asan-ubsan` preset. TSan comes with E.
+
+## 12. Benchmark method
+- **Workload P (Python parity), the same ops:** `bench/py_parity/export_trace.py` imports the Python engine read-only from the sibling repo. It runs `demo.trader`'s generator logic single-threaded (seeds 42, 43, 44 in sequence) and records the exact ops into a binary trace (submit/cancel, id, side, type, price in ticks, qty). The trace and its SHA-256 are committed.
+  - Python side: `bench/py_parity/replay.py` replays the trace through `MatchingEngine` (with its RLock, as in the original benchmark).
+  - C++ side: replays the same file.
+  - Both report orders/sec using Python's definition (submits / wall time including cancels), 5-run medians, on the same machine.
+  - Why replay instead of rerunning `demo.py`: the original Python number also times RNG calls. With replay, both engines do exactly the same work. The old 382,246 is quoted beside it with that caveat, not as the comparison point.
+  - Cross-language check for free: trade count and final book must be equal in both engines.
+- **Workload S (scaled, same shape):** the same distributions generated by the C++ generator, with seed and size in RESULTS.md. Default is 1M ops. 12k ops finish too quickly in C++ for stable timing.
+- **Workload W (wide band):** a broader price range, added for C, because a flat array's best-price scan is only stressed by gaps.
+- **Throughput:** time a whole replay with `steady_clock` and no per-op timers, because per-op timer calls would inflate the time being measured. Warm up with one discarded replay, use a fresh book per run, and report the median of 5 runs.
+- **Latency (D):** take timestamps around each op into a preallocated sample array, then sort for exact p50/p99/p99.9, reported per op kind (rest, cross, cancel, modify). Apple Silicon's user counter is documented at 24 MHz (about 41.7 ns per tick), so the bench measures and prints the observed resolution and timer overhead instead of trusting that figure. If it holds, sub-tick latencies get reported as bucketed. Linux x86 runs later can use finer clocks.
+- **Pinning:** macOS has no hard core affinity on Apple Silicon. The bench sets QoS `USER_INTERACTIVE` to prefer P-cores and says so. Linux CI uses `taskset`.
+- **RESULTS.md** is generated by a script, never hand-edited. It records: date, git SHA, CPU, compiler and version, full flags, workload id, seed, trace hash, and per-run values plus the median.
+
+## 13. How each menu item slots in (one paragraph each)
+- **A. Intrusive FIFO lists.** `RestingOrder` gets `prev`/`next` pointers, `Level` holds `head`/`tail`/`total`/`count`, and the index maps id to `RestingOrder*`. This removes the separate `std::list` node and one pointer hop per access. Cancel stays O(1) through the id map. Defense: the order *is* the list node, so the location the id map stores is the node itself. Alternative: a vector per level with tombstones. It is more cache-friendly to walk, but cancel then needs lazy deletion or O(n) removal.
+- **B. Object pool and zero hot-path allocation.** A fixed slab of `RestingOrder` with an intrusive free list. When the pool is exhausted the order gets `Rejected(CapacityExceeded)`; there is no fallback to `new`. Dependency to defend: `std::unordered_map` and `std::map` allocate a node per insert even after `reserve`, so B also needs a preallocated open-addressing id table and a non-allocating ladder (C's array, or map nodes from the pool). C should land before B. Proof: the test binary replaces every global `operator new`/`delete` variant with counting versions, warms up, resets the counter, runs N steady-state ops into a non-allocating sink, and asserts the count is 0.
+- **C. Price ladder: flat array vs `std::map`.** The array is `Level[kMaxPrice - kMinPrice + 1]` indexed by `price - kMinPrice`, plus best-bid and best-ask indices. When the best level empties, scan toward worse prices to the next non-empty level. Prices outside the band are rejected. The trade-off is O(1) level access and contiguous memory versus O(gap) scans and memory proportional to the band. Bench both on workloads S and W, keep the winner, and record the numbers. The ladder becomes a template parameter so the losing variant stays buildable and the comparison reproduces.
+- **D. Latency histograms and Python comparison.** Section 12. It goes first among the upgrades, so A, B, C and F each get a measured before/after instead of an assumed one.
+- **E. SPSC ring, gateway to matcher.** A power-of-two ring buffer. `head` and `tail` are `std::atomic<size_t>` on separate 128-byte-aligned lines. The producer publishes with `release` and the consumer reads with `acquire`. Each side caches the other's index to cut cross-core traffic. With one producer and one consumer it is lock-free (in fact wait-free per operation, bounded). The book is unchanged. The `tsan` preset runs the stress test. Measure gateway-enqueue to matcher-done latency, and throughput against direct calls. Expect the ring to add latency, not matching throughput, and write it up that way to avoid adjacency claims.
+- **F. Cache work.** Use `static_assert(sizeof/offsetof)` on hot structs and dump record layouts with `clang -Xclang -fdump-record-layouts`. Split hot fields (links, open, price, id) from cold ones (total, timestamps) into parallel arrays. Check false sharing on E's indices. Every change is kept only if the bench shows it helped.
+- **G. NASDAQ ITCH 5.0 replay.** An important honesty point: ITCH is a market-by-order *output* feed, so replaying it rebuilds the book from the exchange's own decisions. It exercises our data structures, not our matching. It needs a second, non-matching API: `apply_add`, `apply_execute`, `apply_cancel_partial`, `apply_delete`, `apply_replace`. Parsing: 2-byte big-endian length framing, big-endian fields, 6-byte timestamps, 4-decimal prices mapped to ticks. Message types: A and F (adds), E and C (executions), X, D and U. P (non-displayed trade) is counted but does not touch the book. Books are keyed by stock locate. The sample file is downloaded by a script, not committed (size and license). Report msgs/sec and per-message latency.
+- **H. CI.** GitHub Actions on `ubuntu-24.04`, matrix {gcc-14, clang-18} x {Release, asan-ubsan} (+tsan after E). A bench job uploads RESULTS as an artifact, labeled "shared CI VM, noisy, not a headline number".
+- **I. Plot.** A matplotlib script turns the bench CSV into PNGs (latency CDF, depth chart). Each PNG is committed next to the CSV it came from.
+
+## 14. Proposed chunk order
+Baseline, one concern per chunk (about 100 to 300 lines each):
+0. Scaffold: remove the old scaffold files on v2, then CMake (C++20, warnings), presets, GoogleTest, empty library, one smoke test, `.gitignore`.
+1. Types, `Event`, `EventSink` concept, validation and rejects, plus tests.
+2. Limit orders: rest and cross, `std::map` + `std::list` ladder, trades at maker price, plus tests.
+3. Cancel through the id index, plus tests.
+4. Market, IOC and FOK, plus tests.
+5. Modify (shrink keeps priority, cancel-replace loses it), plus tests.
+6. Reference book, plus its own small sanity tests.
+7. Invariant checker and differential fuzz, run under `asan-ubsan`.
+
+Recommended upgrade order (Steven decides):
+- **D**, so there is a baseline to measure against
+- **H**, cheap and catches gcc portability issues early
+- **A**, then **C**, then **B** (B needs a non-allocating ladder)
+- **F**, then **E**, then **G**, then **I**
+
+## 15. Prior-art notes carried forward
+- Kept from Python: maker-price trades, a single writer, an invariant checker after stress, honest benchmark framing with no thread-speedup claims.
+- Dropped from Python: lazy deletion, float prices, the coarse lock.
+- Dropped from the old C++ repo: everything (string ids, a counter shared between orders and trades, an O(n) depth scan, the C++17/20 mismatch).
+
