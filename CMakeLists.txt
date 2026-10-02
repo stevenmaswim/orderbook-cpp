@@ -35,6 +35,11 @@ target_compile_options(ob_warnings INTERFACE
 add_library(ob INTERFACE)
 target_include_directories(ob INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+option(OB_BUILD_BENCH "Build the benchmark driver" ON)
+if(OB_BUILD_BENCH)
+  add_subdirectory(bench)
+endif()
+
 option(OB_BUILD_TESTS "Build the test suite" ON)
 if(OB_BUILD_TESTS)
   enable_testing()
