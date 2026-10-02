@@ -295,14 +295,17 @@ def write_markdown(out: Path, r: dict, expected: dict, books: list[str], py: dic
             f"Python {py['python']}, `bench/py_parity/replay.py`: ops decoded before timing, each "
             f"replay on a fresh `MatchingEngine` (RLock included), {py['reps_per_run']} replays per run.",
             "",
-            "| Engine | orders/sec (median) | vs Python |",
-            "|---|---:|---:|",
-            f"| Python engine | {fmt(py['orders_per_sec_median'])} | 1.0x |",
+            "| Engine | orders/sec (median) | min .. max | vs Python (median / median) |",
+            "|---|---:|---:|---:|",
+            f"| Python engine | {fmt(py['orders_per_sec_median'])} | "
+            f"{fmt(min(py['orders_per_sec_runs']))} .. {fmt(max(py['orders_per_sec_runs']))} | 1.0x |",
         ]
         for x in r["throughput"]:
             if x["workload"] == "py_parity":
                 ratio = x["orders_per_sec_median"] / py["orders_per_sec_median"]
-                L.append(f"| C++ {x['book']} | {fmt(x['orders_per_sec_median'])} | {ratio:,.1f}x |")
+                o = x["orders_per_sec_runs"]
+                L.append(f"| C++ {x['book']} | {fmt(x['orders_per_sec_median'])} | "
+                         f"{fmt(min(o))} .. {fmt(max(o))} | {ratio:,.1f}x |")
         L += [
             "",
             "The Python repo's own `benchmarks/RESULTS.md` reports a different quantity "
