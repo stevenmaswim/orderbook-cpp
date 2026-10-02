@@ -14,6 +14,7 @@ FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 
 add_executable(ob_unit_tests
-  unit/smoke_test.cpp)
+  unit/smoke_test.cpp
+  unit/validate_test.cpp)
 target_link_libraries(ob_unit_tests PRIVATE ob ob_warnings GTest::gtest_main)
 gtest_discover_tests(ob_unit_tests DISCOVERY_MODE PRE_TEST)

@@ -36,7 +36,7 @@ All output is a stream of one flat, trivially copyable `Event` struct:
 | `Accepted` | The order passed validation. Carries side, type and limit price. |
 | `Rejected` | Validation failed or the id is a live duplicate. Carries `reason`. The book is unchanged. |
 | `Trade` | `id` is the taker, `other_id` is the maker, `price` is the maker's resting price, `qty` is the filled amount. |
-| `Cancelled` | Remaining qty removed. `reason` is one of: UserCancel, MarketRemainder, IocRemainder, FokUnfillable, ReplacedOut. |
+| `Cancelled` | Remaining qty removed. `reason` is one of: UserCancel, MarketRemainder, IocRemainder, FokUnfillable. |
 | `Modified` | The modify was applied. `reason` = KeptPriority or LostPriority. |
 
 **Delivery:** the book's mutating methods are member templates that take `Sink& sink`. Any type satisfying the concept `EventSink` (callable as `sink(const Event&)`) works. Tests pass a `VectorSink` (it records events). The bench passes a `CountingSink` (it only counts). Why: the compiler inlines the call, so there is no virtual dispatch and no `std::function` (which can heap-allocate and is an indirect call). Alternative: a preallocated ring buffer the caller drains, which is what menu item E wants on the output side. A ring is just another `EventSink`, so this choice does not block E.
