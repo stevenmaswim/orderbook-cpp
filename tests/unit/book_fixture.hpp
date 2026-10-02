@@ -1,25 +1,22 @@
 #pragma once
 
 // Shared fixture for the order-type unit tests. The tests are gtest *typed*
-// tests: every test runs once per book implementation listed in BookTypes, so
-// the baseline and each upgraded book must pass the exact same behavioral
-// suite.
+// tests: every test runs once per book listed in AllBookTypes
+// (book_types.hpp), so the baseline, each upgraded book and the reference
+// model must all pass the exact same behavioral suite.
 #include <gtest/gtest.h>
 
 #include <vector>
 
-#include "ob/baseline_book.hpp"
+#include "book_types.hpp"
 #include "ob/event.hpp"
 #include "ob/snapshot.hpp"
-#include "reference_book.hpp"
 
 namespace obtest {
 
 using namespace ob;
 
-// The reference model runs the same suite, which checks that the oracle the
-// differential fuzz trusts agrees with every hand-written case.
-using BookTypes = ::testing::Types<BaselineBook, ReferenceBook>;
+using BookTypes = AllBookTypes;  // see book_types.hpp
 
 inline const BookConfig kTestConfig{1, 100'000};
 

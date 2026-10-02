@@ -146,7 +146,7 @@ bench/        bench_main.cpp  trace.hpp  py_parity/ (Python scripts)  RESULTS.md
 
    The generator is skewed to find bugs: a narrow price band (about 10 ticks) so most orders cross; all four types; cancels and modifies aimed mostly at live ids but sometimes at dead or unknown ones; reused ids; and FOK quantities near the available liquidity.
 
-   Defaults: about 500 seeds x 1,000 ops under ctest, so it stays fast under ASan. A `--long` flag runs a large sweep.
+   Defaults: 500 seeds x 1,000 ops under ctest, so it stays fast under ASan. Environment variables `OB_FUZZ_SEEDS`, `OB_FUZZ_OPS` and `OB_FUZZ_FIRST_SEED` run a large sweep or replay one seed. The test also asserts that every reject, cancel and modify reason was produced at least once, so the generator cannot silently stop reaching an edge case.
 
    On failure it prints the seed, the op index and the last few ops, so the failure is a one-line repro.
 
