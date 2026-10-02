@@ -20,5 +20,6 @@ add_executable(ob_unit_tests
   unit/cancel_test.cpp
   unit/tif_test.cpp
   unit/modify_test.cpp)
+target_include_directories(ob_unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ob_unit_tests PRIVATE ob ob_warnings GTest::gtest_main)
 gtest_discover_tests(ob_unit_tests DISCOVERY_MODE PRE_TEST)

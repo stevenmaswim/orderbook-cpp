@@ -11,12 +11,15 @@
 #include "ob/baseline_book.hpp"
 #include "ob/event.hpp"
 #include "ob/snapshot.hpp"
+#include "reference_book.hpp"
 
 namespace obtest {
 
 using namespace ob;
 
-using BookTypes = ::testing::Types<BaselineBook>;
+// The reference model runs the same suite, which checks that the oracle the
+// differential fuzz trusts agrees with every hand-written case.
+using BookTypes = ::testing::Types<BaselineBook, ReferenceBook>;
 
 inline const BookConfig kTestConfig{1, 100'000};
 
