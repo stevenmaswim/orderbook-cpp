@@ -29,7 +29,7 @@
 #include <sched.h>
 #endif
 
-#include "ob/baseline_book.hpp"
+#include "ob/books.hpp"
 #include "ob/op.hpp"
 #include "trace.hpp"
 #include "workloads.hpp"
@@ -323,6 +323,7 @@ void timer_info() {
 template <class F>
 bool with_book(const std::string& name, F&& f) {
     if (name == "baseline") return f.template operator()<BaselineBook>(), true;
+    if (name == "intrusive_map") return f.template operator()<IntrusiveMapBook>(), true;
     return false;
 }
 

@@ -5,16 +5,16 @@
 // the differential fuzz with no other test changes.
 #include <gtest/gtest.h>
 
-#include "ob/baseline_book.hpp"
+#include "ob/books.hpp"
 #include "reference_book.hpp"
 
 namespace obtest {
 
-using RealBookTypes = ::testing::Types<ob::BaselineBook>;
+using RealBookTypes = ::testing::Types<ob::BaselineBook, ob::IntrusiveMapBook>;
 
 // Real books plus the reference model. The unit suite runs over this list, which
 // checks that the oracle the differential fuzz trusts agrees with every
 // hand-written case.
-using AllBookTypes = ::testing::Types<ob::BaselineBook, ReferenceBook>;
+using AllBookTypes = ::testing::Types<ob::BaselineBook, ob::IntrusiveMapBook, ReferenceBook>;
 
 }  // namespace obtest
