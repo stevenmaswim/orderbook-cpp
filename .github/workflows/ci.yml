@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    # Linux x86-64 with both major compilers. gcc and libstdc++ catch
+    # portability issues that Apple clang and libc++ never see.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - { cc: gcc-14, cxx: g++-14 }
+          - { cc: clang-18, cxx: clang++-18 }
+        preset: [release, asan-ubsan]
+    name: ${{ matrix.compiler.cxx }} / ${{ matrix.preset }}
+    env:
+      CC: ${{ matrix.compiler.cc }}
+      CXX: ${{ matrix.compiler.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} -j "$(nproc)"
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }} -j "$(nproc)"
+
+  bench:
+    # Publishes the benchmark tables as a build artifact. A shared CI VM is
+    # noisy and its CPU varies run to run, so these numbers are labeled as
+    # such and are never the ones quoted in the README.
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-14
+      CXX: g++-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (Release)
+        run: |
+          cmake --preset release -DOB_BUILD_TESTS=OFF
+          cmake --build --preset release -j "$(nproc)"
+      - name: Run benchmarks
+        run: OB_BENCH_CPU=1 python3 bench/run_all.py --skip-python --out ci-bench
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-ci-noisy
+          path: ci-bench/

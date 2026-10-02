@@ -91,7 +91,8 @@ std::string prefer_fast_core() {
     if (const char* cpu = std::getenv("OB_BENCH_CPU")) {
         cpu_set_t set;
         CPU_ZERO(&set);
-        CPU_SET(std::atoi(cpu), &set);
+        // CPU_SET takes a size_t; convert explicitly so -Wsign-conversion stays clean.
+        CPU_SET(static_cast<std::size_t>(std::atoi(cpu)), &set);
         if (sched_setaffinity(0, sizeof set, &set) == 0) return std::string("pinned to cpu ") + cpu;
     }
     return "not pinned";
