@@ -40,7 +40,9 @@ def bench(*args: str) -> dict:
 
 
 def machine_info() -> dict:
-    info = {"os": platform.platform(), "arch": platform.machine()}
+    # Recorded so a reader can see whether the machine was busy during the run.
+    info = {"os": platform.platform(), "arch": platform.machine(),
+            "loadavg_at_start": " / ".join(f"{x:.2f}" for x in os.getloadavg())}
     if sys.platform == "darwin":
         info["cpu"] = sh(["sysctl", "-n", "machdep.cpu.brand_string"])
         info["cores"] = (f"{sh(['sysctl', '-n', 'hw.perflevel0.physicalcpu'])} performance + "
@@ -161,6 +163,7 @@ def write_markdown(out: Path, r: dict, expected: dict, books: list[str], py: dic
         f"| Git | {b['git']} |",
         f"| CPU | {m['cpu']} ({m['cores']}) |",
         f"| OS | {m['os']} |",
+        f"| Load average at start (1/5/15 min) | {m['loadavg_at_start']} |",
         f"| Compiler | {b['compiler']} |",
         f"| Flags | `{b['flags']}` |",
         f"| Thread placement | {r['throughput'][0]['pinning']} |",
