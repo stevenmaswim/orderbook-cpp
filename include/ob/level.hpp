@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstdint>
-
 #include "ob/assert.hpp"
 #include "ob/types.hpp"
 
@@ -13,6 +11,11 @@ namespace ob {
 
 struct Level;
 
+// Layout (upgrade F audit, see bench/experiments/layout/): 64 bytes, no
+// padding except 7 bytes after `side`. Every field here is touched when the
+// order is matched or cancelled, so there is no cold field worth splitting
+// out; dropping the redundant `price` (the level knows it) and aligning to 64
+// bytes were both measured and did not give a consistent win.
 struct Order {
     Order* prev = nullptr;  // toward the front (older)
     Order* next = nullptr;  // toward the back (newer)
@@ -25,11 +28,16 @@ struct Order {
 };
 
 // One price level: a doubly linked FIFO plus its running total.
+//
+// 32 bytes, so four levels share one 128-byte cache line on the M5 and a
+// line never splits a level. An earlier version also kept an order count
+// that nothing read; removing it took Level from 40 to 32 bytes and made the
+// array ladder measurably faster, most of all on the sparse workload where
+// the best-level scan walks many levels (bench/experiments/layout/).
 struct Level {
     Order* head = nullptr;  // oldest order: the next to fill
     Order* tail = nullptr;  // newest order: where arrivals go
     Qty total = 0;          // sum of open qty, kept up to date on every change
-    std::uint32_t count = 0;
     Price price = 0;
 
     bool empty() const { return head == nullptr; }
@@ -43,7 +51,6 @@ struct Level {
         else head = o;
         tail = o;
         total += o->open;
-        ++count;
     }
 
     // Remove from anywhere in the list in O(1) by relinking the neighbours.
@@ -54,10 +61,12 @@ struct Level {
         if (o->next) o->next->prev = o->prev;
         else tail = o->prev;
         total -= o->open;
-        --count;
         o->prev = o->next = nullptr;
         o->level = nullptr;
     }
 };
+
+static_assert(sizeof(Order) == 64, "Order layout changed: re-run the layout experiments");
+static_assert(sizeof(Level) == 32, "Level layout changed: re-run the layout experiments");
 
 }  // namespace ob
