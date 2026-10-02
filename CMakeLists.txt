@@ -40,6 +40,8 @@ if(OB_BUILD_BENCH)
   add_subdirectory(bench)
 endif()
 
+add_subdirectory(examples)
+
 option(OB_BUILD_TESTS "Build the test suite" ON)
 if(OB_BUILD_TESTS)
   enable_testing()

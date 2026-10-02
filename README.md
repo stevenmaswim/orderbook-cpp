@@ -88,6 +88,16 @@ What the measurements showed, in words (the numbers are in RESULTS.md):
   layout ideas were measured and rejected
   ([`bench/experiments/layout/`](bench/experiments/layout/)).
 
+## Demo
+
+A guided tour: every order type in turn, printing the events and the book
+after each step, then a short load run.
+
+```bash
+cmake --preset release && cmake --build --preset release -j
+./build/release/examples/ob_demo
+```
+
 ## Build and test
 
 Needs CMake 3.24+ and a C++20 compiler. GoogleTest is fetched on first configure.
