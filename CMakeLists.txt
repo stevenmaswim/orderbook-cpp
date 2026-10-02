@@ -1,26 +1,42 @@
-cmake_minimum_required(VERSION 3.16)
-project(orderbook_cpp LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.24)
+project(orderbook_v2 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+# C++20 for concepts (EventSink) and std::span. Extensions off so the code
+# builds the same under gcc and clang on Linux CI.
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-add_compile_options(-Wall -Wextra -Wpedantic)
+# Sanitizers apply to every target, gtest included, because ASan needs the
+# whole process instrumented to catch bad accesses that cross library lines.
+# Values: "" (off), "address,undefined", "thread".
+set(OB_SANITIZE "" CACHE STRING "Sanitizer list passed to -fsanitize=")
+if(OB_SANITIZE)
+  # no-sanitize-recover makes UBSan abort, so any UB fails the test run
+  # instead of printing a warning that scrolls past.
+  add_compile_options(-fsanitize=${OB_SANITIZE} -fno-omit-frame-pointer
+                      -fno-sanitize-recover=all)
+  add_link_options(-fsanitize=${OB_SANITIZE})
+endif()
 
-# Core library
-add_library(orderbook STATIC src/order_book.cpp)
-target_include_directories(orderbook PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# Strict warnings for our code only (not gtest), carried by an interface
+# target. -Wconversion catches silent int64 -> int truncation of a price or qty.
+add_library(ob_warnings INTERFACE)
+target_compile_options(ob_warnings INTERFACE
+  -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror)
 
-# Demo driver
-add_executable(orderbook_demo src/main.cpp)
-target_link_libraries(orderbook_demo PRIVATE orderbook)
+# The engine is header-only: the book's methods are templates on the event
+# sink, so their bodies must be visible to every caller.
+add_library(ob INTERFACE)
+target_include_directories(ob INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-# Tests
-enable_testing()
-add_executable(orderbook_tests tests/test_order_book.cpp)
-target_link_libraries(orderbook_tests PRIVATE orderbook)
-add_test(NAME orderbook_tests COMMAND orderbook_tests)
+option(OB_BUILD_TESTS "Build the test suite" ON)
+if(OB_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
