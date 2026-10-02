@@ -1,0 +1,13 @@
+diff --git a/include/ob/level.hpp b/include/ob/level.hpp
+index c5b4da6..881c022 100644
+--- a/include/ob/level.hpp
++++ b/include/ob/level.hpp
+@@ -16,7 +16,7 @@ struct Level;
+ // order is matched or cancelled, so there is no cold field worth splitting
+ // out; dropping the redundant `price` (the level knows it) and aligning to 64
+ // bytes were both measured and did not give a consistent win.
+-struct Order {
++struct alignas(64) Order {
+     Order* prev = nullptr;  // toward the front (older)
+     Order* next = nullptr;  // toward the back (newer)
+     Level* level = nullptr; // the level this order rests on

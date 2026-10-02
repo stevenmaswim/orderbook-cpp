@@ -1,0 +1,51 @@
+diff --git a/include/ob/level.hpp b/include/ob/level.hpp
+index c5b4da6..1457572 100644
+--- a/include/ob/level.hpp
++++ b/include/ob/level.hpp
+@@ -21,7 +21,6 @@ struct Order {
+     Order* next = nullptr;  // toward the back (newer)
+     Level* level = nullptr; // the level this order rests on
+     OrderId id = 0;
+-    Price price = 0;
+     Qty open = 0;
+     Seq seq = 0;
+     Side side = Side::Buy;
+@@ -66,7 +65,7 @@ struct Level {
+     }
+ };
+ 
+-static_assert(sizeof(Order) == 64, "Order layout changed: re-run the layout experiments");
++static_assert(sizeof(Order) == 56, "Order layout changed: re-run the layout experiments");
+ static_assert(sizeof(Level) == 32, "Level layout changed: re-run the layout experiments");
+ 
+ }  // namespace ob
+diff --git a/include/ob/order_book.hpp b/include/ob/order_book.hpp
+index 24741c0..1f374d4 100644
+--- a/include/ob/order_book.hpp
++++ b/include/ob/order_book.hpp
+@@ -99,7 +99,7 @@ public:
+             sink(Event::rejected(id, r));
+             return;
+         }
+-        if (new_price == o->price && new_qty <= o->open) {
++        if (new_price == o->level->price && new_qty <= o->open) {
+             o->level->total -= o->open - new_qty;  // keep the level total exact
+             o->open = new_qty;
+             sink(Event::modified(id, o->side, new_price, new_qty, Reason::KeptPriority));
+@@ -164,7 +164,7 @@ private:
+             while (open > 0 && !level->empty()) {
+                 Order* maker = level->head;
+                 const Qty fill = std::min(open, maker->open);
+-                sink(Event::trade(taker, side, maker->id, maker->price, fill));
++                sink(Event::trade(taker, side, maker->id, level->price, fill));
+                 open -= fill;
+                 maker->open -= fill;
+                 level->total -= fill;
+@@ -184,7 +184,6 @@ private:
+         Order* o = store_.acquire();
+         OB_ASSERT(o != nullptr);
+         o->id = id;
+-        o->price = price;
+         o->open = open;
+         o->seq = next_seq_++;
+         o->side = side;

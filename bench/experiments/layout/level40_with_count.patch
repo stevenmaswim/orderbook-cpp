@@ -1,0 +1,43 @@
+diff --git a/include/ob/level.hpp b/include/ob/level.hpp
+index c5b4da6..28c30d3 100644
+--- a/include/ob/level.hpp
++++ b/include/ob/level.hpp
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++#include <cstdint>
++
+ #include "ob/assert.hpp"
+ #include "ob/types.hpp"
+ 
+@@ -38,6 +40,7 @@ struct Level {
+     Order* head = nullptr;  // oldest order: the next to fill
+     Order* tail = nullptr;  // newest order: where arrivals go
+     Qty total = 0;          // sum of open qty, kept up to date on every change
++    std::uint32_t count = 0;
+     Price price = 0;
+ 
+     bool empty() const { return head == nullptr; }
+@@ -51,6 +54,7 @@ struct Level {
+         else head = o;
+         tail = o;
+         total += o->open;
++        ++count;
+     }
+ 
+     // Remove from anywhere in the list in O(1) by relinking the neighbours.
+@@ -61,12 +65,13 @@ struct Level {
+         if (o->next) o->next->prev = o->prev;
+         else tail = o->prev;
+         total -= o->open;
++        --count;
+         o->prev = o->next = nullptr;
+         o->level = nullptr;
+     }
+ };
+ 
+ static_assert(sizeof(Order) == 64, "Order layout changed: re-run the layout experiments");
+-static_assert(sizeof(Level) == 32, "Level layout changed: re-run the layout experiments");
++static_assert(sizeof(Level) == 40, "Level layout changed: re-run the layout experiments");
+ 
+ }  // namespace ob
