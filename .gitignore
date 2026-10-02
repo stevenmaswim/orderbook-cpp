@@ -7,3 +7,4 @@ compile_commands.json
 *.trace
 .cache/
 __pycache__/
+data/

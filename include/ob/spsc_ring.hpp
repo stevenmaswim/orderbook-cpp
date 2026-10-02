@@ -78,7 +78,10 @@ private:
 
     Producer prod_;
     Consumer cons_;
-    alignas(Align) T slots_[Capacity];
+    // Value-initialized once at construction. A slot is only ever read after
+    // the producer wrote it, but starting from defined values costs one
+    // memset up front and keeps gcc's maybe-uninitialized analysis quiet.
+    alignas(Align) T slots_[Capacity]{};
 };
 
 // Tell the core we are spinning (lets an SMT sibling run, saves power).

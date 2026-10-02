@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build" / "release"
 BENCH = BUILD / "bench" / "ob_bench"
 PIPELINE = BUILD / "bench" / "ob_pipeline_bench"
+ITCH = BUILD / "bench" / "ob_itch_bench"
+ITCH_FILE = ROOT / "data" / "itch" / "sample.itch"
 PIPELINE_CONFIGS = [
     ("direct", "none"), ("saturated", "padded"), ("saturated", "unpadded"),
     ("paced", "padded"), ("paced", "unpadded"),
@@ -192,6 +194,27 @@ def main() -> None:
             merged[key] = median(merged[f"{key}_runs"])
         results["pipeline"].append(merged)
 
+    # Upgrade G: NASDAQ ITCH replay, if tools/fetch_itch_sample.sh was run.
+    if ITCH_FILE.exists():
+        itch_rounds = []
+        for rnd in range(args.runs):
+            print(f"itch round {rnd + 1}/{args.runs}", file=sys.stderr)
+            tp = json.loads(sh([str(ITCH), "--file", str(ITCH_FILE), "--mode", "throughput"], cwd=ROOT))
+            lat = json.loads(sh([str(ITCH), "--file", str(ITCH_FILE), "--mode", "latency"], cwd=ROOT))
+            itch_rounds.append((tp, lat))
+        merged = dict(itch_rounds[0][0])
+        merged["msgs_per_sec_runs"] = [tp["msgs_per_sec"] for tp, _ in itch_rounds]
+        merged["msgs_per_sec"] = median(merged["msgs_per_sec_runs"])
+        merged["kinds"] = {}
+        for kind in itch_rounds[0][1]["kinds"]:
+            k = {"samples": itch_rounds[0][1]["kinds"][kind]["samples"]}
+            for pct in ("p50", "p99", "p999", "max"):
+                k[f"{pct}_ns"] = median([lat["kinds"][kind][f"{pct}_ns"] for _, lat in itch_rounds])
+            merged["kinds"][kind] = k
+        meta_file = ITCH_FILE.with_suffix(".meta")
+        merged["meta"] = dict(line.split("=", 1) for line in meta_file.read_text().split()) if meta_file.exists() else {}
+        results["itch"] = merged
+
     py = None
     if not args.skip_python:
         print("python replay", file=sys.stderr)
@@ -333,6 +356,50 @@ def write_markdown(out: Path, r: dict, expected: dict, books: list[str], py: dic
             "Both matcher and gateway busy-spin; with no hard core pinning on macOS, tail values "
             "include the OS descheduling a spinning thread.",
         ]
+    if r.get("itch"):
+        it = r["itch"]
+        meta = it.get("meta", {})
+        bt = it["by_type"]
+        L += [
+            "",
+            "## NASDAQ TotalView-ITCH 5.0 replay (upgrade G)",
+            "",
+            f"Input: the first {meta.get('gzip_prefix_mb', '?')} MB of the gzip of "
+            f"`{meta.get('source', '?')}`, decompressed: {int(it['bytes']):,} bytes, sha256 "
+            f"`{meta.get('sha256', '?')[:16]}...` (fetch with `tools/fetch_itch_sample.sh`; not "
+            "committed). This is the start of the trading day's feed, mostly pre-market. "
+            "`bench/itch_main.cpp` reads the file into memory first, then parses each "
+            "length-prefixed message and applies adds (A, F), executions (E, C), cancels (X), "
+            "deletes (D) and replaces (U) to one `intrusive_map` book per stock locate. Trades "
+            "against hidden orders (P) and all other types are counted only.",
+            "",
+            "ITCH is the exchange's own output: replaying it exercises the book's data structures "
+            "(ladder, FIFO levels, id index), not this engine's matching, because the feed already "
+            "says what matched.",
+            "",
+            "| | |",
+            "|---|---|",
+            f"| Messages | {int(it['messages']):,} |",
+            f"| Applied to a book | {int(it['applied']):,} (A {bt.get('A', 0):,}, F {bt.get('F', 0):,}, "
+            f"E {bt.get('E', 0):,}, C {bt.get('C', 0):,}, X {bt.get('X', 0):,}, D {bt.get('D', 0):,}, "
+            f"U {bt.get('U', 0):,}) |",
+            f"| Rejected by the book (unknown ref, over-execution) | {int(it['rejected_by_book']):,} |",
+            f"| Malformed | {int(it['malformed']):,} |",
+            f"| Stock books created / orders resting at the end | {int(it['books']):,} / "
+            f"{int(it['resting_orders']):,} |",
+            f"| Throughput (parse + apply, median of {runs} rounds) | "
+            f"{fmt(it['msgs_per_sec'])} messages/sec "
+            f"(min {fmt(min(it['msgs_per_sec_runs']))} .. max {fmt(max(it['msgs_per_sec_runs']))}) |",
+            "",
+            "Per-message latency, parse + apply, by kind (ns; median across rounds; same clock "
+            "caveats as above):",
+            "",
+            "| Kind | samples | p50 ns | p99 ns | p99.9 ns | max ns |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+        for kind, v in it["kinds"].items():
+            L.append(f"| {kind} | {int(v['samples']):,} | {fmt(v['p50_ns'])} | {fmt(v['p99_ns'])} | "
+                     f"{fmt(v['p999_ns'])} | {fmt(v['max_ns'])} |")
     L += [
         "",
         "## What this does not measure",

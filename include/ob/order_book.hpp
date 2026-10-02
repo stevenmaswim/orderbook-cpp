@@ -114,6 +114,49 @@ public:
         if (open > 0) rest(id, side, new_price, open);
     }
 
+    // ---- Market-by-order replay (upgrade G) -------------------------------
+    // Apply decisions an exchange already made (an ITCH feed). No matching
+    // and no events: the feed is the source of truth. Each returns false and
+    // changes nothing if the message does not fit the book (unknown id, more
+    // shares than are open, duplicate id, full storage).
+
+    bool replay_add(OrderId id, Side side, Price price, Qty qty) {
+        if (qty <= 0 || store_.find(id) != nullptr || store_.full()) return false;
+        rest(id, side, price, qty);
+        return true;
+    }
+
+    // An execution or a partial cancel: take `qty` off the order's open qty.
+    bool replay_reduce(OrderId id, Qty qty) {
+        Order* o = store_.find(id);
+        if (o == nullptr || qty <= 0 || qty > o->open) return false;
+        o->open -= qty;
+        o->level->total -= qty;
+        if (o->open == 0) remove(o);
+        return true;
+    }
+
+    bool replay_delete(OrderId id) {
+        Order* o = store_.find(id);
+        if (o == nullptr) return false;
+        remove(o);
+        return true;
+    }
+
+    // ITCH replace: the old order goes away and a new id rests on the same
+    // side at the back of its level (a replace always loses priority).
+    bool replay_replace(OrderId old_id, OrderId new_id, Price price, Qty qty) {
+        Order* o = store_.find(old_id);
+        if (o == nullptr || qty <= 0) return false;
+        // Check the new id before touching anything, so a bad replace leaves
+        // the old order in place. (Storage cannot be full here: remove()
+        // below frees a node first.)
+        if (new_id != old_id && store_.find(new_id) != nullptr) return false;
+        const Side side = o->side;
+        remove(o);
+        return replay_add(new_id, side, price, qty);
+    }
+
     std::optional<Price> best_bid() const { return best_of(bids_); }
     std::optional<Price> best_ask() const { return best_of(asks_); }
     std::size_t resting_count() const { return store_.size(); }
