@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 // Core value types. Everything is an integer: prices are ticks, quantities
@@ -46,6 +47,9 @@ inline constexpr Qty kMaxQty = 1'000'000'000;
 struct BookConfig {
     Price min_price = 1;
     Price max_price = 1'000'000;
+    // Only the pooled storage (upgrade B) uses this: the most orders that can
+    // rest at once. Its slab and id table are sized from it up front.
+    std::size_t max_orders = 1 << 16;
 };
 
 // A new order as the client sends it.

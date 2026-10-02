@@ -130,7 +130,9 @@ Workload load(const Args& a) {
     // Band wider than the workload's prices, so no order is rejected for its
     // price and a flat ladder (upgrade C) is not handed an unrealistically
     // tiny array.
-    w.cfg = BookConfig{1, 20'000};
+    // max_orders: room for the most orders any workload leaves resting (the
+    // 1M-submit workloads peak a little above 100k).
+    w.cfg = BookConfig{1, 20'000, 1 << 18};
     for (const Op& op : w.ops) w.submits += op.kind == OpKind::Submit ? 1 : 0;
     return w;
 }
@@ -331,6 +333,8 @@ bool with_book(const std::string& name, F&& f) {
     if (name == "baseline") return f.template operator()<BaselineBook>(), true;
     if (name == "intrusive_map") return f.template operator()<IntrusiveMapBook>(), true;
     if (name == "intrusive_array") return f.template operator()<IntrusiveArrayBook>(), true;
+    if (name == "pool_array") return f.template operator()<PoolArrayBook>(), true;
+    if (name == "pool_map") return f.template operator()<PoolMapBook>(), true;
     return false;
 }
 

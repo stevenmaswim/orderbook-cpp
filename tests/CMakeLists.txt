@@ -20,7 +20,8 @@ add_executable(ob_unit_tests
   unit/cancel_test.cpp
   unit/tif_test.cpp
   unit/modify_test.cpp
-  unit/invariants_test.cpp)
+  unit/invariants_test.cpp
+  unit/pool_test.cpp)
 target_include_directories(ob_unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ob_unit_tests PRIVATE ob ob_warnings GTest::gtest_main)
 gtest_discover_tests(ob_unit_tests DISCOVERY_MODE PRE_TEST)
@@ -31,3 +32,12 @@ add_executable(ob_fuzz_tests fuzz_differential.cpp)
 target_include_directories(ob_fuzz_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ob_fuzz_tests PRIVATE ob ob_warnings GTest::gtest_main)
 gtest_discover_tests(ob_fuzz_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 600)
+
+# Replaces global operator new to count allocations, so it must be its own
+# program. Skipped under ASan, which installs its own operator new.
+if(NOT OB_SANITIZE)
+  add_executable(ob_alloc_tests alloc_test.cpp)
+  target_include_directories(ob_alloc_tests PRIVATE ${CMAKE_SOURCE_DIR}/bench)
+  target_link_libraries(ob_alloc_tests PRIVATE ob ob_warnings GTest::gtest_main)
+  gtest_discover_tests(ob_alloc_tests DISCOVERY_MODE PRE_TEST)
+endif()

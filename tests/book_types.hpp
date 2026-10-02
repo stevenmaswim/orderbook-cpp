@@ -10,13 +10,13 @@
 
 namespace obtest {
 
-using RealBookTypes =
-    ::testing::Types<ob::BaselineBook, ob::IntrusiveMapBook, ob::IntrusiveArrayBook>;
+using RealBookTypes = ::testing::Types<ob::BaselineBook, ob::IntrusiveMapBook, ob::IntrusiveArrayBook,
+                                       ob::PoolArrayBook, ob::PoolMapBook>;
 
 // Real books plus the reference model. The unit suite runs over this list, which
 // checks that the oracle the differential fuzz trusts agrees with every
 // hand-written case.
-using AllBookTypes = ::testing::Types<ob::BaselineBook, ob::IntrusiveMapBook,
-                                      ob::IntrusiveArrayBook, ReferenceBook>;
+using AllBookTypes = ::testing::Types<ob::BaselineBook, ob::IntrusiveMapBook, ob::IntrusiveArrayBook,
+                                      ob::PoolArrayBook, ob::PoolMapBook, ReferenceBook>;
 
 }  // namespace obtest

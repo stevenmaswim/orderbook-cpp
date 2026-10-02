@@ -25,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build" / "release"
 BENCH = BUILD / "bench" / "ob_bench"
-ALL_BOOKS = ["baseline", "intrusive_map", "intrusive_array"]
+ALL_BOOKS = ["baseline", "intrusive_map", "intrusive_array", "pool_map", "pool_array"]
 SHAPE_SEED = 1
 SHAPE_SUBMITS = 1_000_000
 
