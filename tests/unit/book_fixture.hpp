@@ -37,6 +37,12 @@ protected:
         return submit(id, Side::Sell, OrderType::Limit, px, q);
     }
 
+    std::vector<Event> cancel(OrderId id) {
+        VectorSink sink;
+        book.cancel(id, sink);
+        return sink.events;
+    }
+
     BookSnapshot snap() const { return book.snapshot(); }
 
     // The ids resting at one price, front of the FIFO first.

@@ -56,6 +56,21 @@ public:
         if (open > 0) rest(o.id, o.side, o.price, open);
     }
 
+    // Remove a resting order. O(1) average: hash lookup, then erase by the
+    // stored iterators. Events: Cancelled(UserCancel), or Rejected(UnknownOrder)
+    // if the id is not resting (never seen, filled, already cancelled, or an
+    // order type that never rests).
+    template <EventSink S>
+    void cancel(OrderId id, S& sink) {
+        auto it = index_.find(id);
+        if (it == index_.end()) {
+            sink(Event::rejected(id, Reason::UnknownOrder));
+            return;
+        }
+        sink(Event::cancelled(id, it->second.side, it->second.order->open, Reason::UserCancel));
+        remove(it);
+    }
+
     std::optional<Price> best_bid() const {
         if (bids_.empty()) return std::nullopt;
         return bids_.begin()->first;
@@ -151,6 +166,16 @@ private:
         level.fifo.push_back(RestingOrder{id, price, open, next_seq_++, side});
         level.total += open;
         index_.emplace(id, Locator{level_it, std::prev(level.fifo.end()), side});
+    }
+
+    // Unlink a resting order from its level, its side and the index.
+    void remove(std::unordered_map<OrderId, Locator>::iterator index_it) {
+        const Locator loc = index_it->second;
+        Level& level = loc.level->second;
+        level.total -= loc.order->open;
+        level.fifo.erase(loc.order);
+        if (level.fifo.empty()) side_map(loc.side).erase(loc.level);
+        index_.erase(index_it);
     }
 
     static void copy_side(const LevelMap& book, std::vector<LevelView>& out) {
