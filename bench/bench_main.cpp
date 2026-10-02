@@ -9,6 +9,7 @@
 // Workloads:
 //   py_parity : the Python engine's exact op stream (bench/py_parity/py_parity.bin)
 //   shape     : same shape, 1M submits, generated from --seed
+//   wide      : same shape, prices over a 20,000-tick band (sparse book)
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -117,6 +118,11 @@ Workload load(const Args& a) {
         w.default_reps = 200;
     } else if (a.workload == "shape") {
         w.ops = generate_shape(ShapeParams{a.seed, a.submits, 9950, 10050});
+    } else if (a.workload == "wide") {
+        // Same shape, but prices spread over the whole 20,000-tick band. The
+        // book becomes sparse, which is the worst case for the array ladder's
+        // scan to the next non-empty level.
+        w.ops = generate_shape(ShapeParams{a.seed, a.submits, 1, 20'000});
     } else {
         std::fprintf(stderr, "unknown workload %s\n", a.workload.c_str());
         std::exit(2);
@@ -324,6 +330,7 @@ template <class F>
 bool with_book(const std::string& name, F&& f) {
     if (name == "baseline") return f.template operator()<BaselineBook>(), true;
     if (name == "intrusive_map") return f.template operator()<IntrusiveMapBook>(), true;
+    if (name == "intrusive_array") return f.template operator()<IntrusiveArrayBook>(), true;
     return false;
 }
 

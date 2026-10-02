@@ -25,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build" / "release"
 BENCH = BUILD / "bench" / "ob_bench"
-ALL_BOOKS = ["baseline", "intrusive_map"]
+ALL_BOOKS = ["baseline", "intrusive_map", "intrusive_array"]
 SHAPE_SEED = 1
 SHAPE_SUBMITS = 1_000_000
 
@@ -107,8 +107,8 @@ def main() -> None:
     shape_args = ["--seed", str(SHAPE_SEED), "--submits", str(SHAPE_SUBMITS)]
     shape_states = {}
     for book in books:
-        for wl in ("py_parity", "shape"):
-            extra = shape_args if wl == "shape" else []
+        for wl in ("py_parity", "shape", "wide"):
+            extra = shape_args if wl != "py_parity" else []
             print(f"throughput {book} {wl}", file=sys.stderr)
             t = bench("--mode", "throughput", "--book", book, "--workload", wl, "--runs", runs, *extra)
             # Correctness gate: a fast wrong book is worthless.
@@ -118,14 +118,15 @@ def main() -> None:
                 if state != want:
                     sys.exit(f"{book} end state on py_parity differs from the Python engine's")
             else:
-                shape_states[book] = state
+                shape_states.setdefault(wl, {})[book] = state
             results["throughput"].append(t)
             print(f"latency {book} {wl}", file=sys.stderr)
             hist = out / f"data/latency_hist_{book}_{wl}.csv"
             results["latency"].append(bench("--mode", "latency", "--book", book, "--workload", wl,
                                             "--runs", runs, "--hist-csv", str(hist), *extra))
-    if len({json.dumps(s, sort_keys=True) for s in shape_states.values()}) > 1:
-        sys.exit("books disagree on the end state of the shape workload")
+    for wl, states in shape_states.items():
+        if len({json.dumps(s, sort_keys=True) for s in states.values()}) > 1:
+            sys.exit(f"books disagree on the end state of the {wl} workload")
 
     py = None
     if not args.skip_python:
@@ -178,10 +179,12 @@ def write_markdown(out: Path, r: dict, expected: dict, books: list[str], py: dic
         "One run = 200 back-to-back replays, each on a fresh book (throughput) or 20 (latency).",
         f"- **shape**: the same distributions generated in C++ (`bench/workloads.hpp`), "
         f"{SHAPE_SUBMITS:,} submits, seed {SHAPE_SEED}. One replay per run.",
+        f"- **wide**: the shape workload with prices spread over the whole 20,000-tick band "
+        f"instead of 101 ticks, so the book is sparse. Same size and seed.",
         "",
         "Every book's end state on py_parity (trades, traded qty, resting orders, every price "
         "level's qty) matched the Python engine's recorded end state, and all books matched each "
-        "other on shape. The script refuses to write this file otherwise.",
+        "other on shape and wide. The script refuses to write this file otherwise.",
         "",
         "## Throughput",
         "",
