@@ -17,6 +17,7 @@ import os
 import platform
 import re
 import shlex
+import statistics
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -86,6 +87,41 @@ def fmt(n: float) -> str:
     return f"{n:,.0f}"
 
 
+def check_state(book: str, wl: str, t: dict, expected: dict, shape_states: dict) -> None:
+    """Correctness gate: a fast wrong book is worthless."""
+    state = {k: t[k] for k in ("trades", "traded_qty", "resting_orders", "bids", "asks")}
+    if wl == "py_parity":
+        if state != {k: expected[k] for k in state}:
+            sys.exit(f"{book} end state on py_parity differs from the Python engine's")
+    else:
+        shape_states.setdefault(wl, {})[book] = state
+
+
+def median(xs: list[float]) -> float:
+    return statistics.median(xs)
+
+
+def merge_throughput(rounds: list[dict]) -> dict:
+    m = dict(rounds[0])
+    for key in ("orders_per_sec", "ops_per_sec"):
+        m[f"{key}_runs"] = [r[f"{key}_runs"][0] for r in rounds]
+        m[f"{key}_median"] = median(m[f"{key}_runs"])
+    return m
+
+
+def merge_latency(rounds: list[dict]) -> dict:
+    m = dict(rounds[0])
+    m["kinds"] = {}
+    for kind in rounds[0]["kinds"]:
+        per = [r["kinds"][kind] for r in rounds if kind in r["kinds"]]
+        k = {"samples_per_run": per[0]["samples_per_run"]}
+        for pct in ("p50", "p99", "p999", "max"):
+            k[f"{pct}_runs"] = [v[f"{pct}_ns"] for v in per]
+            k[f"{pct}_ns"] = median(k[f"{pct}_runs"])
+        m["kinds"][kind] = k
+    return m
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--books", default=",".join(ALL_BOOKS))
@@ -107,27 +143,31 @@ def main() -> None:
 
     results: dict = {"build": build, "machine": machine, "timer": timer, "throughput": [], "latency": []}
     shape_args = ["--seed", str(SHAPE_SEED), "--submits", str(SHAPE_SUBMITS)]
-    shape_states = {}
-    for book in books:
-        for wl in ("py_parity", "shape", "wide"):
-            extra = shape_args if wl != "py_parity" else []
-            print(f"throughput {book} {wl}", file=sys.stderr)
-            t = bench("--mode", "throughput", "--book", book, "--workload", wl, "--runs", runs, *extra)
-            # Correctness gate: a fast wrong book is worthless.
-            state = {k: t[k] for k in ("trades", "traded_qty", "resting_orders", "bids", "asks")}
-            if wl == "py_parity":
-                want = {k: expected[k] for k in state}
-                if state != want:
-                    sys.exit(f"{book} end state on py_parity differs from the Python engine's")
-            else:
-                shape_states.setdefault(wl, {})[book] = state
-            results["throughput"].append(t)
-            print(f"latency {book} {wl}", file=sys.stderr)
-            hist = out / f"data/latency_hist_{book}_{wl}.csv"
-            results["latency"].append(bench("--mode", "latency", "--book", book, "--workload", wl,
-                                            "--runs", runs, "--hist-csv", str(hist), *extra))
+    shape_states: dict = {}
+
+    # Interleaved rounds: each round runs every book once, each in a fresh
+    # process with its own warmup. macOS cannot pin a thread to a core, so a
+    # process can land on an efficiency core; interleaving spreads that bad
+    # luck across books instead of letting it skew one book's whole row.
+    # Each reported figure is the median across rounds.
+    for wl in ("py_parity", "shape", "wide"):
+        extra = shape_args if wl != "py_parity" else []
+        tp_rounds: dict = {b: [] for b in books}
+        lat_rounds: dict = {b: [] for b in books}
+        for rnd in range(args.runs):
+            for book in books:
+                print(f"{wl} round {rnd + 1}/{args.runs} {book}", file=sys.stderr)
+                t = bench("--mode", "throughput", "--book", book, "--workload", wl, "--runs", "1", *extra)
+                check_state(book, wl, t, expected, shape_states)
+                tp_rounds[book].append(t)
+                hist = out / f"data/latency_hist_{book}_{wl}.csv"
+                lat_rounds[book].append(bench("--mode", "latency", "--book", book, "--workload", wl,
+                                              "--runs", "1", "--hist-csv", str(hist), *extra))
+        for book in books:
+            results["throughput"].append(merge_throughput(tp_rounds[book]))
+            results["latency"].append(merge_latency(lat_rounds[book]))
     for wl, states in shape_states.items():
-        if len({json.dumps(s, sort_keys=True) for s in states.values()}) > 1:
+        if len({json.dumps(st, sort_keys=True) for st in states.values()}) > 1:
             sys.exit(f"books disagree on the end state of the {wl} workload")
 
     py = None
@@ -169,7 +209,8 @@ def write_markdown(out: Path, r: dict, expected: dict, books: list[str], py: dic
         f"| Thread placement | {r['throughput'][0]['pinning']} |",
         f"| Timer | `{t['clock']}`: smallest observed step {t['min_nonzero_step_ns']} ns, "
         f"{t['cost_per_read_ns']} ns per read |",
-        f"| Runs | {runs} timed runs after 1 discarded warmup run; tables show the median |",
+        f"| Runs | {runs} interleaved rounds; each round runs every book once in a fresh process "
+        "(1 discarded warmup replay, then 1 timed run); tables show the median across rounds |",
         "",
         "## Workloads",
         "",
@@ -228,7 +269,7 @@ def write_markdown(out: Path, r: dict, expected: dict, books: list[str], py: dic
         "## Latency per operation",
         "",
         "One `steady_clock` read before and after each op. Each value is the median over the "
-        "runs of that run's percentile (nearest rank). Samples include the cost of one clock "
+        "rounds of that round's percentile (nearest rank). Samples include the cost of one clock "
         f"read (about {t['cost_per_read_ns']} ns), and on this machine the clock moves in "
         f"steps of {t['min_nonzero_step_ns']} ns, so sub-step differences are not visible: "
         "treat small values as buckets, not exact times. `rejected` is mostly cancels of "
