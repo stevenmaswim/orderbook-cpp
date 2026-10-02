@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
+#include <limits>
 #include <list>
 #include <map>
 #include <optional>
@@ -32,7 +33,8 @@ public:
     explicit BaselineBook(BookConfig cfg = {})
         : cfg_(cfg), bids_(PriceOrder{true}), asks_(PriceOrder{false}) {}
 
-    // Accept a new order: match what crosses, then rest the remainder.
+    // Accept a new order: match what crosses, then rest the remainder (Limit)
+    // or cancel it (Market, IOC). FOK either fills completely or not at all.
     // Events: Accepted, Trade*, then at most one Cancelled. Or a lone Rejected.
     template <EventSink S>
     void submit(const NewOrder& o, S& sink) {
@@ -46,14 +48,35 @@ public:
             sink(Event::rejected(o.id, Reason::DuplicateId));
             return;
         }
-        if (o.type != OrderType::Limit) {
-            // Market, IOC and FOK arrive in chunk 4.
-            sink(Event::rejected(o.id, Reason::InvalidType));
+        sink(Event::accepted(o));
+
+        // FOK is all-or-nothing, so check the whole fill is possible before
+        // touching anything. Uses level totals: O(levels crossed), not O(orders).
+        if (o.type == OrderType::FOK && !fok_fillable(o.side, o.price, o.qty)) {
+            sink(Event::cancelled(o.id, o.side, o.qty, Reason::FokUnfillable));
             return;
         }
-        sink(Event::accepted(o));
-        Qty open = match(o.id, o.side, o.price, o.qty, sink);
-        if (open > 0) rest(o.id, o.side, o.price, open);
+
+        const Qty open = match(o.id, o.side, effective_limit(o), o.qty, sink);
+        if (open == 0) return;
+
+        switch (o.type) {
+            case OrderType::Limit:
+                rest(o.id, o.side, o.price, open);
+                break;
+            case OrderType::Market:
+                // No price to rest at, so the unfilled part is cancelled.
+                sink(Event::cancelled(o.id, o.side, open, Reason::MarketRemainder));
+                break;
+            case OrderType::IOC:
+                sink(Event::cancelled(o.id, o.side, open, Reason::IocRemainder));
+                break;
+            case OrderType::FOK:
+                // The pre-check said the full qty was available and nothing
+                // can change between the check and the match (single thread).
+                OB_ASSERT(false && "FOK passed its pre-check but did not fill");
+                break;
+        }
     }
 
     // Remove a resting order. O(1) average: hash lookup, then erase by the
@@ -128,6 +151,27 @@ private:
     // Does a taker on `side` with this limit trade against a level at `px`?
     static bool crosses(Side side, Price limit, Price px) {
         return side == Side::Buy ? px <= limit : px >= limit;
+    }
+
+    // A market order is treated as a limit order at the worst possible price,
+    // so the one matching loop serves every order type.
+    static Price effective_limit(const NewOrder& o) {
+        if (o.type != OrderType::Market) return o.price;
+        return o.side == Side::Buy ? std::numeric_limits<Price>::max()
+                                   : std::numeric_limits<Price>::min();
+    }
+
+    // Is there at least `qty` on the opposite side at prices this order
+    // would accept? Stops as soon as the answer is yes.
+    bool fok_fillable(Side side, Price limit, Qty qty) const {
+        const LevelMap& book = side == Side::Buy ? asks_ : bids_;
+        Qty available = 0;
+        for (const auto& [price, level] : book) {
+            if (!crosses(side, limit, price)) break;
+            available += level.total;
+            if (available >= qty) return true;
+        }
+        return false;
     }
 
     // Fill `open` against the opposite side, best level first and FIFO within
