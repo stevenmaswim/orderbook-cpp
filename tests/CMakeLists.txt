@@ -21,9 +21,11 @@ add_executable(ob_unit_tests
   unit/tif_test.cpp
   unit/modify_test.cpp
   unit/invariants_test.cpp
-  unit/pool_test.cpp)
+  unit/pool_test.cpp
+  unit/spsc_test.cpp)
 target_include_directories(ob_unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ob_unit_tests PRIVATE ob ob_warnings GTest::gtest_main)
+find_package(Threads REQUIRED)
+target_link_libraries(ob_unit_tests PRIVATE ob ob_warnings GTest::gtest_main Threads::Threads)
 gtest_discover_tests(ob_unit_tests DISCOVERY_MODE PRE_TEST)
 
 # The differential fuzz is its own binary so it can be run alone with a big

@@ -15,7 +15,7 @@ jobs:
         compiler:
           - { cc: gcc-14, cxx: g++-14 }
           - { cc: clang-18, cxx: clang++-18 }
-        preset: [release, asan-ubsan]
+        preset: [release, asan-ubsan, tsan]
     name: ${{ matrix.compiler.cxx }} / ${{ matrix.preset }}
     env:
       CC: ${{ matrix.compiler.cc }}

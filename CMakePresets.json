@@ -9,7 +9,9 @@
     {
       "name": "debug",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "asan-ubsan",
@@ -23,17 +25,66 @@
     {
       "name": "release",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "tsan",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O1 -g",
+        "OB_SANITIZE": "thread"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "debug", "configurePreset": "debug" },
-    { "name": "asan-ubsan", "configurePreset": "asan-ubsan" },
-    { "name": "release", "configurePreset": "release" }
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "asan-ubsan",
+      "configurePreset": "asan-ubsan"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan"
+    }
   ],
   "testPresets": [
-    { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
-    { "name": "asan-ubsan", "configurePreset": "asan-ubsan", "output": { "outputOnFailure": true } },
-    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } }
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "asan-ubsan",
+      "configurePreset": "asan-ubsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }

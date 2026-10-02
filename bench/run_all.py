@@ -26,6 +26,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build" / "release"
 BENCH = BUILD / "bench" / "ob_bench"
+PIPELINE = BUILD / "bench" / "ob_pipeline_bench"
+PIPELINE_CONFIGS = [
+    ("direct", "none"), ("saturated", "padded"), ("saturated", "unpadded"),
+    ("paced", "padded"), ("paced", "unpadded"),
+]
 ALL_BOOKS = ["baseline", "intrusive_map", "intrusive_array", "pool_map", "pool_array"]
 SHAPE_SEED = 1
 SHAPE_SUBMITS = 1_000_000
@@ -170,6 +175,23 @@ def main() -> None:
         if len({json.dumps(st, sort_keys=True) for st in states.values()}) > 1:
             sys.exit(f"books disagree on the end state of the {wl} workload")
 
+    # Upgrade E: gateway thread -> SPSC ring -> matcher thread, interleaved
+    # rounds like everything else.
+    pipe_rounds: dict = {c: [] for c in PIPELINE_CONFIGS}
+    for rnd in range(args.runs):
+        for mode, ring in PIPELINE_CONFIGS:
+            print(f"pipeline round {rnd + 1}/{args.runs} {mode} {ring}", file=sys.stderr)
+            extra = [] if mode == "direct" else ["--ring", ring]
+            out_line = sh([str(PIPELINE), "--mode", mode, *extra], cwd=ROOT)
+            pipe_rounds[(mode, ring)].append(json.loads(out_line))
+    results["pipeline"] = []
+    for (mode, ring), rs in pipe_rounds.items():
+        merged = dict(rs[0])
+        for key in ("ops_per_sec", "p50_ns", "p99_ns", "p999_ns", "max_ns"):
+            merged[f"{key}_runs"] = [x[key] for x in rs]
+            merged[key] = median(merged[f"{key}_runs"])
+        results["pipeline"].append(merged)
+
     py = None
     if not args.skip_python:
         print("python replay", file=sys.stderr)
@@ -283,12 +305,41 @@ def write_markdown(out: Path, r: dict, expected: dict, books: list[str], py: dic
         for kind, v in x["kinds"].items():
             L.append(f"| {x['book']} | {x['workload']} | {kind} | {v['samples_per_run']:,} | "
                      f"{fmt(v['p50_ns'])} | {fmt(v['p99_ns'])} | {fmt(v['p999_ns'])} | {fmt(v['max_ns'])} |")
+    if r.get("pipeline"):
+        L += [
+            "",
+            "## Gateway thread to matcher thread through the SPSC ring (upgrade E)",
+            "",
+            "`bench/pipeline_main.cpp`, `pool_array` book, shape workload. A gateway thread stamps "
+            "each op and pushes it into a 16,384-slot ring; a matcher thread pops it, applies it, and "
+            "records done time minus stamp. *direct* is the same ops on one thread with no ring "
+            "(timer around each call). *saturated*: the gateway pushes as fast as it can. *paced*: one "
+            "op per microsecond, so the ring stays nearly empty. *padded* keeps the two threads' "
+            "indices on separate 128-byte lines; *unpadded* packs them onto one line on purpose "
+            "(false sharing).",
+            "",
+            "| Mode | Ring | ops/sec | p50 ns | p99 ns | p99.9 ns | max ns |",
+            "|---|---|---:|---:|---:|---:|---:|",
+        ]
+        for x in r["pipeline"]:
+            L.append(f"| {x['mode']} | {x['ring']} | {fmt(x['ops_per_sec'])} | {fmt(x['p50_ns'])} | "
+                     f"{fmt(x['p99_ns'])} | {fmt(x['p999_ns'])} | {fmt(x['max_ns'])} |")
+        L += [
+            "",
+            "How to read it: the ring does not make matching faster. Saturated pipeline throughput is "
+            "below direct calls on one thread, because every op now also crosses cores. Saturated "
+            "latency is almost all waiting in a full queue (about ring size x time per op), so it "
+            "measures queueing, not the handoff. The paced rows are the handoff-plus-match cost. "
+            "Both matcher and gateway busy-spin; with no hard core pinning on macOS, tail values "
+            "include the OS descheduling a spinning thread.",
+        ]
     L += [
         "",
         "## What this does not measure",
         "",
         "- One thread, one instrument, in-process calls: no network, no parsing, no queueing.",
-        "- Throughput numbers are single-threaded matching speed. No thread count produced them.",
+        "- The throughput tables above are single-threaded matching speed. No thread count "
+        "produced them; the pipeline section is the only two-thread measurement.",
         "- macOS cannot hard-pin a thread to a core; the QoS hint above is all that was applied.",
         "",
     ]
