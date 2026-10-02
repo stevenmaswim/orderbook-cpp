@@ -94,6 +94,43 @@ public:
         remove(it);
     }
 
+    // Change a resting order's price and/or open qty (DESIGN.md section 5).
+    //  - same price, qty not larger: shrink in place, keep queue position
+    //  - price change or qty increase: cancel-replace with the same id; it
+    //    goes to the back of the queue and may trade if the new price crosses
+    // Events: Modified then any Trades, or a lone Rejected. An unknown id is
+    // checked before the new values, so it wins if both are wrong.
+    template <EventSink S>
+    void modify(OrderId id, Price new_price, Qty new_qty, S& sink) {
+        auto it = index_.find(id);
+        if (it == index_.end()) {
+            sink(Event::rejected(id, Reason::UnknownOrder));
+            return;
+        }
+        if (Reason r = validate_modify(new_price, new_qty, cfg_); r != Reason::None) {
+            sink(Event::rejected(id, r));
+            return;
+        }
+        const Locator loc = it->second;
+        RestingOrder& order = *loc.order;
+        if (new_price == order.price && new_qty <= order.open) {
+            // Shrinking cannot hurt anyone behind this order in the queue, so
+            // it keeps its place. The difference is cancelled qty.
+            loc.level->second.total -= order.open - new_qty;
+            order.open = new_qty;
+            sink(Event::modified(id, loc.side, new_price, new_qty, Reason::KeptPriority));
+            return;
+        }
+        // Growing in place would let a trader keep queue position while adding
+        // size ahead of later arrivals, so an increase (or any price change)
+        // re-enters at the back as a brand new arrival.
+        const Side side = loc.side;
+        remove(it);
+        sink(Event::modified(id, side, new_price, new_qty, Reason::LostPriority));
+        const Qty open = match(id, side, new_price, new_qty, sink);
+        if (open > 0) rest(id, side, new_price, open);
+    }
+
     std::optional<Price> best_bid() const {
         if (bids_.empty()) return std::nullopt;
         return bids_.begin()->first;

@@ -54,7 +54,7 @@ All output is a stream of one flat, trivially copyable `Event` struct:
 - **Trade price** is always the maker's resting price. The taker gets any price improvement.
 - **Cancel(id):** if `id` is resting, remove it and emit `Cancelled(UserCancel)` with the qty removed. Otherwise `Rejected(UnknownOrder)`. That covers ids never seen, already filled, already cancelled, or that never rested.
 - **Modify(id, new_price, new_qty)**, where `new_qty` is the new *open* quantity:
-  - The target must be resting and `new_qty > 0`, otherwise `Rejected`. Removing an order uses Cancel, not modify-to-zero.
+  - The target must be resting and `new_qty > 0`, otherwise `Rejected`. Removing an order uses Cancel, not modify-to-zero. An unknown id is checked first, so `UnknownOrder` wins when both are wrong.
   - Same price and `new_qty < open`: shrink in place and keep queue position (`Modified(KeptPriority)`). The difference counts as cancelled qty.
   - Same price and `new_qty == open`: a no-op that keeps priority.
   - Price change or `new_qty > open`: cancel-replace. Remove the order, then re-enter it with the same id, a new seq and the new price/qty (`Modified(LostPriority)`). If the new price crosses, it trades as a taker before resting.

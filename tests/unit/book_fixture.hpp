@@ -43,6 +43,12 @@ protected:
         return sink.events;
     }
 
+    std::vector<Event> modify(OrderId id, Price px, Qty q) {
+        VectorSink sink;
+        book.modify(id, px, q, sink);
+        return sink.events;
+    }
+
     BookSnapshot snap() const { return book.snapshot(); }
 
     // The ids resting at one price, front of the FIFO first.
